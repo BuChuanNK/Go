@@ -98,3 +98,132 @@ Go 协程和通道以及选择器的结合是Go的一个强大特性。
 			fmt.Println("received", msg2)
 		}
 	}
+
+## 3. Timeout 超时处理
+*超时* 对于一个连接外部资源, 或者其它一些需要花费执行时间的操作的程序而言很重要. 在Go语言当中，使用 Chan 和 select 就可以实现超时操作. 
+
+    c1 := make(chan string, 1)
+    // 执行一个匿名函数，在2秒内通过通道c1返回执行结果。
+	go func() {
+		time.Sleep(time.Second * 2)
+		c1 <- "result 1"
+	}()
+    // 使用select实现一个超时操作。通道选择器中有两个选择:
+    // 1. res := <-c1 等待结果
+    // 2. <-Time.After 等待超时时间1秒后，自动执行结果。
+	select {
+	case res := <-c1:
+		fmt.Println(res)
+	case <-time.After(time.Second * 1):
+		fmt.Println("timeout 1")
+	}
+
+## 4. Non-Blocking Channel 非阻塞通道操作
+常规的通道发送和接收数据是阻塞的. 
+然而, 外面可以使用带一个default子句的select来实现 *非阻塞* 的发送、接收,甚至是非阻塞的多路select。
+
+    // 这是一个典型的非阻塞接收的例子. 如果在messages通道中存在就接收，不存在就执行default.
+    select {
+	case msg := <-messages:
+		fmt.Println("received message", msg)
+	default:
+		fmt.Println("no message received")
+	}
+
+    // 使用通道选择器来实现多路的非阻塞通道操作。关键是default。
+    select {
+	case msg := <-messages:
+		fmt.Println("received message", msg)
+	case sig := <-signals:
+		fmt.Println("received signal", sig)
+	default:
+		fmt.Println("no activity")
+	}
+
+## 5. Closing Channel 通道关闭
+*通道关闭* 意味着不能再向这个通道发送数据。
+这可以用来给这个通道的接收方传达工作已经完成的信息。
+
+    
+    // 接收方
+    go func() {
+        for {
+            j, more := <-jobs
+            if more {
+                fmt.Println("received job", j)
+            } else {
+                fmt.Println("received all jobs")
+                done <- true
+                return
+            }
+        }
+    }()
+
+    // 发送方
+    for j := 1; j <= 3; j++ {
+        jobs <- j
+        fmt.Println("sent job", j)
+    }
+    // 发送结束，关闭通道jobs
+    close(jobs)
+    // 此时jobs通道已经关闭，等到done通道的bool信息传送出来，表示接收方的工作已经完成。
+    // 通道同步知识, 参见18_Channel.go
+    <-done
+
+## 6. Range Over Channels 通道遍历
+可以使用for 和range的语法来遍历从通道中取得的所有值。
+即遍历通道缓存中的所有值。
+
+    queue := make(chan string, 2)
+    queue <- "one"
+    queue <- "two"
+    close(queue)
+
+    for elem := range queue {
+        fmt.Println(elem)
+    }
+
+## 7. Timer 定时器
+Go 内置有 *Timer* 和 *Ticker*。
+这两个特性可以实现定时任务和时间段内的循环任务。
+
+定时器表示在未来某一时刻的独立事件。因此: 
+1. 需要告诉定时器需要等待的时间。
+2. 提供一个用于通知的通道。
+
+    timer1 := time.NewTimer(time.Second * 2)
+
+<-timer1.C 意味着: 直到这个定时器的通道C明确地发送了定时器失效的值之前，将一直阻塞. 
+
+定时器可以在中途取消。
+
+    timer2 := time.NewTimer(time.Second)
+    go func() {
+        <-timer2.C
+        fmt.Println("Timer 2 expired")
+    }()
+    stop2 := timer2.Stop()
+    if stop2 {
+        fmt.Println("Timer 2 stopped")
+    }
+
+## 8. Ticker 打点器
+*定时器* 是希望在未来某一刻执行一次时使用的。
+*打点器* 时希望在固定的时间间隔重复执行时使用的。
+
+打点器和定时器的机制有点相似: 
+1. 需要一个通道来发送数据。
+2. 使用内置的 range 来迭代每间隔时间发送数据。
+   
+    ticker := time.NewTicker(time.Millisecond * 500)
+    go func() {
+        for t := range ticker.C {
+            fmt.Println("Tick at", t)
+        }
+    }()
+
+打点器同样可以停止。但是停止之后就不能再接收到值来。
+    
+    time.Sleep(time.Millisecond * 1600)
+    ticker.Stop()
+
