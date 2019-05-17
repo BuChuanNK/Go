@@ -227,3 +227,98 @@ Go 内置有 *Timer* 和 *Ticker*。
     time.Sleep(time.Millisecond * 1600)
     ticker.Stop()
 
+## 9. Worker Pool 工作池
+在 Go 中, 可以是使用 Go Routine 和 Channel 来实现一个工作池. 
+*工作池* 可以用来实现高并发的任务。比如例子 25_WorkerPool.go 中, 每个worker都会从jobs通道接收任务，然后通过results发送出去。每个任务间隔为1s。
+
+    // 声明3个worker
+    for w := 1; w <= 3; w++ {
+        go worker(w, jobs, results)
+    }
+    // 输入9个job
+    for j := 1; j <= 9; j++ {
+        jobs <- j
+    }
+    close(jobs)
+    // 等待结果输出
+    for a := 1; a <= 9; a++ {
+        <-results
+    }
+
+最后结果会发现，9个任务只耗时3秒，因为3个worker是并行的。
+
+## 10. Rate Limit 速率限制
+*Rate Limit* 是一个重要的控制服务资源利用和质量的途径。
+最简单的速率限制，就是先声明一个限制器，然后在for循环中必须要等到限制器时间到了，之后再进行操作，类似于Sleep()
+
+    limiter := time.Tick(time.Millisecond * 200)
+    for req := range requests {
+        <-limiter
+        fmt.Println("request", req, time.Now())
+    }
+
+但是，如果只是需要临时进行速率限制，并且不影响整体的速率，可以通过 *通道缓冲* 来实现。
+
+    // 使用 通道缓冲 来实现3次临时的脉冲型速率限制
+    burstyLimiter := make(chan time.Time, 3)
+    for i := 0; i < 3; i++ {
+        burstyLimiter <- time.Now()
+    }
+    // 每200ms将添加一个新值到burstyLimiter通道中，直到达到了3的限制。
+    go func() {
+        for t := range time.Tick(time.Millisecond * 200) {
+            burstyLimiter <- t
+        }
+    }()
+    // 当接入请求超过3个时，刚开始的3个将要受到Limiter的脉冲影响。
+    burstyRequests := make(chan int, 5)
+    for i := 1; i <= 5; i++ {
+        burstyRequests <- i
+    }
+    close(burstyRequests)
+    for req := range burstyRequests {
+        <-burstyLimiter
+        fmt.Println("request", req, time.Now())
+    }
+
+## 11. Atom Counter 原子计数器
+Go 中最主要的状态管理方法时通过 *通道间的沟通来完成的*。
+还有一种方法时使用 *Sync/atomic* 包中, 在多个 Go Routine 中进行 *原子计数*。
+
+可以使用无符号整数型数来表示计数器 (Uint64). 使用 AddUint64 来让计数器自动增加, 使用 & 语法来给出 ops 的内存地址. 
+
+    // 自动计数, 同时使用 &ops 来输出内存地址
+    atomic.AddUint64(&ops, 1)
+    // 允许其他 Go Routine 执行
+    runtime.Gosched()
+
+通过 LoadUint64 将当前值的拷贝提取到 opsFinal 中。
+
+    opsFinal := atomic.LoadUint64(&ops)
+
+## 12. Mutexes 互斥锁
+在 Go 中，对于更为复杂的多 Go Routine 场景，可以使用 *互斥锁* 来安全地访问数据。
+
+    for r := 0; r < 100; r++ {
+		go func() {
+			total := 0
+			// 每次循环读取, 使用一个键来进行访问,
+			// Lock() 保证了这个mutex来确保对state的独占访问, 读取选定的键的值.
+			// Unlock() 这个mutex, 并且 ops 值加1.
+			for {
+				key := rand.Intn(5)
+				mutex.Lock()
+				total += state[key]
+				mutex.Unlock()
+				atomic.AddInt64(&ops, 1)
+
+				// 为了确保Go Routine不会在调度中饿死, 因此需要在每次操作后使用 runtime.Gosched()来进行释放.
+				// 这个释放一般是自动处理, 例如每个通道操作后或者time.Sleep的阻塞调用后相似.
+				runtime.Gosched()
+			}
+		}()
+	}
+
+## 13. Stateful GoRoutine Go状态协程
+在Go中, 我们可以使用互斥锁来进行明确的锁定，使得让共享的 state 跨多个 Go Routine 同步访问. 
+另一个选择是使用内置的 Go Routine 和 Channel 的同步特性来达到同样的效果. 
